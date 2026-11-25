@@ -21,12 +21,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/pkg/config"
 	"github.com/pingcap/tidb/pkg/domain"
 	"github.com/pingcap/tidb/pkg/parser/terror"
 	"github.com/pingcap/tidb/pkg/session"
 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
 	storeerr "github.com/pingcap/tidb/pkg/store/driver/error"
+	"github.com/pingcap/tidb/pkg/store/mockstore"
 	"github.com/pingcap/tidb/pkg/tablecodec"
 	"github.com/pingcap/tidb/pkg/testkit"
 	"github.com/pingcap/tidb/pkg/testkit/external"
@@ -34,6 +36,7 @@ import (
 	"github.com/pingcap/tidb/pkg/util"
 	"github.com/pingcap/tidb/pkg/util/codec"
 	"github.com/stretchr/testify/require"
+	"github.com/tikv/client-go/v2/testutils"
 	"github.com/tikv/client-go/v2/tikv"
 )
 
@@ -69,6 +72,68 @@ func TestSelectCheckVisibility(t *testing.T) {
 	checkSelectResultError("select b from t where b > 0 ", storeerr.ErrTxnAbortedByGC)
 	// Test table read.
 	checkSelectResultError("select * from t", storeerr.ErrTxnAbortedByGC)
+}
+
+func TestPointGetRetriesEpochNotMatchAfterRegionRefresh(t *testing.T) {
+	var cluster testutils.Cluster
+	store := testkit.CreateMockStore(t, mockstore.WithClusterInspector(func(c testutils.Cluster) {
+		cluster = c
+		mockstore.BootstrapWithSingleStore(c)
+	}))
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("use test")
+	tk.MustExec("create table point_get_epoch_retry (id int primary key, v int)")
+	tk.MustExec("insert into point_get_epoch_retry values (1, 10), (2, 20)")
+	tk.MustExec("prepare s from 'select v from point_get_epoch_retry where id = ?'")
+	tk.MustExec("set @id = 2")
+	tk.MustQuery("execute s using @id").Check(testkit.Rows("20"))
+	require.False(t, tk.Session().GetSessionVars().FoundInPlanCache)
+
+	step1 := "github.com/pingcap/tidb/pkg/executor/pointReadRegionRefreshTest-step1"
+	step2 := "github.com/pingcap/tidb/pkg/executor/pointReadRegionRefreshTest-step2"
+	require.NoError(t, failpoint.Enable(step1, "return"))
+	require.NoError(t, failpoint.Enable(step2, "pause"))
+	step2Enabled := true
+	t.Cleanup(func() {
+		require.NoError(t, failpoint.Disable(step1))
+		if step2Enabled {
+			require.NoError(t, failpoint.Disable(step2))
+		}
+	})
+
+	refreshDone := make(chan struct{})
+	type queryResult struct {
+		rows [][]string
+		err  error
+	}
+	resultCh := make(chan queryResult, 1)
+	go func() {
+		ctx := context.WithValue(context.Background(), "pointReadRegionRefreshTest", refreshDone)
+		ctx = failpoint.WithHook(ctx, func(_ context.Context, fpName string) bool {
+			return fpName == step1 || fpName == step2
+		})
+		rs, err := tk.Session().Execute(ctx, "execute s using @id")
+		if err != nil {
+			resultCh <- queryResult{err: err}
+			return
+		}
+		rows, err := session.ResultSetToStringSlice(ctx, tk.Session(), rs[0])
+		resultCh <- queryResult{rows: rows, err: err}
+	}()
+
+	<-refreshDone
+	tblID := external.GetTableByName(t, tk, "test", "point_get_epoch_retry").Meta().ID
+	splitKey := tablecodec.EncodeRowKeyWithHandle(tblID, kv.IntHandle(2))
+	region, _, _, _ := cluster.GetRegionByKey(splitKey)
+	peerID := cluster.AllocID()
+	cluster.Split(region.GetId(), cluster.AllocID(), splitKey, []uint64{peerID}, peerID)
+	require.NoError(t, failpoint.Disable(step2))
+	step2Enabled = false
+
+	result := <-resultCh
+	require.NoError(t, result.err)
+	require.Equal(t, [][]string{{"20"}}, result.rows)
+	require.True(t, tk.Session().GetSessionVars().FoundInPlanCache)
 }
 
 func TestReturnValues(t *testing.T) {

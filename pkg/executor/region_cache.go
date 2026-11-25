@@ -17,6 +17,7 @@ package executor
 import (
 	"context"
 
+	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/pkg/kv"
 	"github.com/tikv/client-go/v2/tikv"
 )
@@ -36,7 +37,18 @@ func refreshRegionCacheForPlanCacheHit(ctx context.Context, store kv.Storage, fo
 	if !ok {
 		return nil
 	}
-	return refreshRegionCacheForKeysIfPlanCacheHit(ctx, provider.GetRegionCache(), foundInPlanCache, keys)
+	if err := refreshRegionCacheForKeysIfPlanCacheHit(ctx, provider.GetRegionCache(), foundInPlanCache, keys); err != nil {
+		return err
+	}
+	if foundInPlanCache {
+		failpoint.InjectContext(ctx, "pointReadRegionRefreshTest-step1", func() {
+			if ch, ok := ctx.Value("pointReadRegionRefreshTest").(chan struct{}); ok {
+				close(ch)
+			}
+		})
+		failpoint.InjectContext(ctx, "pointReadRegionRefreshTest-step2", nil)
+	}
+	return nil
 }
 
 func refreshRegionCacheForKeysIfPlanCacheHit(ctx context.Context, cache *tikv.RegionCache, foundInPlanCache bool, keys []kv.Key) error {
