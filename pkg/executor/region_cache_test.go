@@ -45,6 +45,25 @@ func TestRefreshRegionCacheForPointGetCacheHit(t *testing.T) {
 	require.Equal(t, []byte("q"), loc.EndKey)
 }
 
+func TestRefreshRegionCacheForPointGetWithoutPlanCacheHit(t *testing.T) {
+	cache, cluster, regionIDs, storeID, closeCache := newStaleRegionCacheForPointRead(t)
+	defer closeCache()
+
+	newRegionID := cluster.AllocID()
+	newPeerID := cluster.AllocID()
+	cluster.Split(regionIDs[1], newRegionID, []byte("q"), []uint64{newPeerID}, storeID)
+
+	// Non-cache-hit execution must leave the shared cache alone. In particular,
+	// this stale mapping must not be invalidated or reloaded just because a
+	// point read is executed.
+	require.NoError(t, refreshRegionCacheForKeysIfPlanCacheHit(context.Background(), cache, false, []kv.Key{[]byte("n")}))
+	bo := tikv.NewBackoffer(context.Background(), planCacheRegionRefreshBackoff)
+	loc, err := cache.LocateKey(bo, []byte("n"))
+	require.NoError(t, err)
+	require.Equal(t, regionIDs[1], loc.Region.GetID())
+	require.Empty(t, loc.EndKey)
+}
+
 func TestRefreshRegionCacheForBatchPointGetCacheHit(t *testing.T) {
 	cache, cluster, regionIDs, storeID, closeCache := newStaleRegionCacheForPointRead(t)
 	defer closeCache()

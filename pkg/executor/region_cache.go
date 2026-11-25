@@ -31,12 +31,19 @@ type regionCacheProvider interface {
 // point-read keys. PointGet and BatchPointGet bypass kv.Request and the
 // coprocessor client, so their cache-hit path must refresh through the storage
 // region cache before snapshot Get or BatchGet routes the keys.
-func refreshRegionCacheForPlanCacheHit(ctx context.Context, store kv.Storage, keys []kv.Key) error {
+func refreshRegionCacheForPlanCacheHit(ctx context.Context, store kv.Storage, foundInPlanCache bool, keys []kv.Key) error {
 	provider, ok := store.(regionCacheProvider)
 	if !ok {
 		return nil
 	}
-	return refreshRegionCacheForKeys(ctx, provider.GetRegionCache(), keys)
+	return refreshRegionCacheForKeysIfPlanCacheHit(ctx, provider.GetRegionCache(), foundInPlanCache, keys)
+}
+
+func refreshRegionCacheForKeysIfPlanCacheHit(ctx context.Context, cache *tikv.RegionCache, foundInPlanCache bool, keys []kv.Key) error {
+	if !foundInPlanCache {
+		return nil
+	}
+	return refreshRegionCacheForKeys(ctx, cache, keys)
 }
 
 func refreshRegionCacheForKeys(ctx context.Context, cache *tikv.RegionCache, keys []kv.Key) error {
