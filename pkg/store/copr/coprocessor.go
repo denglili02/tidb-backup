@@ -175,6 +175,11 @@ func (c *CopClient) BuildCopIterator(ctx context.Context, req *kv.Request, vars 
 		respChan: req.KeepOrder,
 		elapsed:  &elapsed,
 	}
+	if req.RefreshRegionCache {
+		if err := refreshRegionCacheForRanges(bo, c.store.GetRegionCache(), req.KeyRanges); err != nil {
+			return nil, copErrorResponse{err}
+		}
+	}
 	buildTaskFunc := func(ranges []kv.KeyRange, hints []int) error {
 		keyRanges := NewKeyRanges(ranges)
 		if tryRowHint {
@@ -281,6 +286,37 @@ func (c *CopClient) BuildCopIterator(ctx context.Context, req *kv.Request, vars 
 	}
 	it.actionOnExceed.setEnabled(option.EnabledRateLimitAction)
 	return it, nil
+}
+
+// refreshRegionCacheForRanges invalidates and re-locates every cached region
+// intersecting ranges. The physical plan cache owns only key-range templates;
+// RegionVerID belongs to the shared client cache and must be refreshed after a
+// cache-hit rebuild, before cop tasks capture it.
+func refreshRegionCacheForRanges(bo *Backoffer, cache *tikv.RegionCache, ranges *kv.KeyRanges) error {
+	if ranges == nil {
+		return nil
+	}
+	for _, r := range ranges.AppendSelfTo(nil) {
+		for startKey := r.StartKey; len(r.EndKey) == 0 || bytes.Compare(startKey, r.EndKey) < 0; {
+			loc, err := cache.LocateKey(bo.TiKVBackoffer(), startKey)
+			if err != nil {
+				return derr.ToTiDBErr(err)
+			}
+			cache.InvalidateCachedRegion(loc.Region)
+			loc, err = cache.LocateKey(bo.TiKVBackoffer(), startKey)
+			if err != nil {
+				return derr.ToTiDBErr(err)
+			}
+			if len(loc.EndKey) == 0 || bytes.Compare(r.EndKey, loc.EndKey) <= 0 {
+				break
+			}
+			if bytes.Compare(loc.EndKey, startKey) <= 0 {
+				return errors.Errorf("region cache refresh did not advance at key %q", startKey)
+			}
+			startKey = loc.EndKey
+		}
+	}
+	return nil
 }
 
 // copTask contains a related Region and KeyRange for a kv.Request.

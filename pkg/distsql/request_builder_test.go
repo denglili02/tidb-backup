@@ -691,6 +691,15 @@ func TestRequestBuilderTiKVClientReadTimeout(t *testing.T) {
 	require.Equal(t, expect, actual)
 }
 
+func TestRequestBuilderRefreshRegionCache(t *testing.T) {
+	request, err := (&RequestBuilder{}).
+		SetKeyRanges(nil).
+		SetRefreshRegionCache(true).
+		Build()
+	require.NoError(t, err)
+	require.True(t, request.RefreshRegionCache)
+}
+
 func TestRequestBuilderMaxExecutionTime(t *testing.T) {
 	dctx := NewDistSQLContextForTest()
 	dctx.MaxExecutionTime = 100

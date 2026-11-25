@@ -375,6 +375,7 @@ func (e *IndexReaderExecutor) buildKVReq(r []kv.KeyRange) (*kv.Request, error) {
 		SetFromSessionVars(e.dctx).
 		SetFromInfoSchema(e.infoSchema).
 		SetMemTracker(e.memTracker).
+		SetRefreshRegionCache(e.Ctx().GetSessionVars().FoundInPlanCache).
 		SetClosestReplicaReadAdjuster(newClosestReadAdjuster(e.dctx, &builder.Request, e.netDataSize)).
 		SetConnIDAndConnAlias(e.dctx.ConnectionID, e.dctx.SessionAlias)
 	kvReq, err := builder.Build()

@@ -575,6 +575,11 @@ type Request struct {
 	// KeyRanges makes sure that the request is sent first by partition then by region.
 	// When the table is small, it's possible that multiple partitions are in the same region.
 	KeyRanges *KeyRanges
+	// RefreshRegionCache forces the coprocessor client to re-locate the request's
+	// key ranges before it creates cop tasks. It is used for plan-cache hits: the
+	// cached physical plan is rebuilt with the current parameters, but the shared
+	// client region cache may have observed an older region epoch.
+	RefreshRegionCache bool
 
 	// For PartitionTableScan used by tiflash.
 	PartitionIDAndRanges []PartitionIDAndRanges

@@ -260,6 +260,13 @@ func (builder *RequestBuilder) SetKeyRanges(keyRanges []kv.KeyRange) *RequestBui
 	return builder
 }
 
+// SetRefreshRegionCache makes the coprocessor client re-locate this request's
+// concrete key ranges before it creates region tasks.
+func (builder *RequestBuilder) SetRefreshRegionCache(refresh bool) *RequestBuilder {
+	builder.Request.RefreshRegionCache = refresh
+	return builder
+}
+
 // SetKeyRangesWithHints sets "KeyRanges" for "kv.Request" with row count hints.
 func (builder *RequestBuilder) SetKeyRangesWithHints(keyRanges []kv.KeyRange, hints []int) *RequestBuilder {
 	builder.Request.KeyRanges = kv.NewNonParitionedKeyRangesWithHint(keyRanges, hints)
