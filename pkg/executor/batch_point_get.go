@@ -315,6 +315,11 @@ func (e *BatchPointGetExec) initialize(ctx context.Context) error {
 		}
 
 		// Fetch all handles.
+		if e.Ctx().GetSessionVars().FoundInPlanCache {
+			if err := refreshRegionCacheForPlanCacheHit(ctx, e.Ctx().GetStore(), toFetchIndexKeys); err != nil {
+				return err
+			}
+		}
 		handleVals, err = batchGetter.BatchGet(ctx, toFetchIndexKeys)
 		if err != nil {
 			return err
@@ -441,6 +446,11 @@ func (e *BatchPointGetExec) initialize(ctx context.Context) error {
 		}
 	}
 	// Fetch all values.
+	if e.Ctx().GetSessionVars().FoundInPlanCache {
+		if err := refreshRegionCacheForPlanCacheHit(ctx, e.Ctx().GetStore(), keys); err != nil {
+			return err
+		}
+	}
 	values, err = batchGetter.BatchGet(ctx, keys)
 	if err != nil {
 		return err

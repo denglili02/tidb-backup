@@ -657,6 +657,11 @@ func (e *PointGetExecutor) get(ctx context.Context, key kv.Key) ([]byte, error) 
 	if len(key) == 0 {
 		return nil, kv.ErrNotExist
 	}
+	if e.Ctx().GetSessionVars().FoundInPlanCache {
+		if err := refreshRegionCacheForPlanCacheHit(ctx, e.Ctx().GetStore(), []kv.Key{key}); err != nil {
+			return nil, err
+		}
+	}
 
 	var (
 		val []byte
