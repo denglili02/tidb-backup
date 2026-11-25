@@ -582,6 +582,64 @@ func TestRebuild(t *testing.T) {
 	taskEqual(t, tasks[0], regionIDs[2], 0, "q", "z")
 }
 
+func TestBuildCopIteratorRefreshesStaleRegionCacheOnPlanCacheHit(t *testing.T) {
+	// Start with two regions and warm the cache for [m, z). A split then makes
+	// that cached routing stale. A reused physical plan supplies the same
+	// concrete range, but its request is marked as a plan-cache hit.
+	mockClient, cluster, pdClient, err := testutils.NewMockTiKV("", nil)
+	require.NoError(t, err)
+	storeID, regionIDs, peerIDs := testutils.BootstrapWithMultiRegions(cluster, []byte("m"))
+	tikvStore, err := tikv.NewTestTiKVStore(mockClient, pdClient, nil, nil, 0)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, tikvStore.Close())
+		pdClient.Close()
+		require.NoError(t, mockClient.Close())
+	}()
+	copStore, err := NewStore(tikvStore, nil)
+	require.NoError(t, err)
+	defer copStore.Close()
+
+	cache := copStore.GetRegionCache()
+	bo := backoff.NewBackofferWithVars(context.Background(), 3000, nil)
+	ranges := buildCopRanges("m", "z")
+
+	// Warm the client cache with the pre-split region.
+	tasks, err := buildTestCopTasks(bo, cache, ranges, &kv.Request{}, nil)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	taskEqual(t, tasks[0], regionIDs[1], 0, "m", "z")
+
+	// PD now has two regions, while the client cache still routes [m, z) to
+	// the old region. This is the stale route a cache hit used to retain.
+	newRegionID := cluster.AllocID()
+	newPeerID := cluster.AllocID()
+	cluster.Split(regionIDs[1], newRegionID, []byte("q"), []uint64{newPeerID}, storeID)
+	staleTasks, err := buildTestCopTasks(bo, cache, ranges, &kv.Request{}, nil)
+	require.NoError(t, err)
+	require.Len(t, staleTasks, 1)
+	taskEqual(t, staleTasks[0], regionIDs[1], 0, "m", "z")
+
+	// Simulate the rebuilt request produced by a physical-plan cache hit. The
+	// refresh flag must force re-location before BuildCopIterator captures
+	// region metadata in cop tasks.
+	killed := uint32(0)
+	cacheHitReq := &kv.Request{
+		Tp:                 kv.ReqTypeDAG,
+		KeyRanges:          kv.NewNonParitionedKeyRanges(ranges.AppendSelfTo(nil)),
+		Concurrency:        1,
+		RefreshRegionCache: true,
+	}
+	it, errRes := (&CopClient{store: copStore}).BuildCopIterator(
+		context.Background(), cacheHitReq, kv.NewVariables(&killed), &kv.ClientSendOption{},
+	)
+	require.Nil(t, errRes)
+	tasks = it.GetTasks()
+	require.Len(t, tasks, 2)
+	taskEqual(t, tasks[0], regionIDs[1], 0, "m", "q")
+	taskEqual(t, tasks[1], newRegionID, 0, "q", "z")
+}
+
 func buildCopRanges(keys ...string) *KeyRanges {
 	return NewKeyRanges(BuildKeyRanges(keys...))
 }
